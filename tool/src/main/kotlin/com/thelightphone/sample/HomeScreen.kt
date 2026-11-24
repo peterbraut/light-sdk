@@ -3,7 +3,9 @@ package com.thelightphone.sample
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -24,6 +26,8 @@ import com.thelightphone.sdk.ui.LightThemeController
 import com.thelightphone.sdk.ui.LightThemeTokens
 import com.thelightphone.sdk.ui.lightClickable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,14 +46,14 @@ val CHANNELS = listOf(
 class HomeScreenViewModel : LightViewModel<Unit>() {
 
     val playingId = MutableStateFlow<String?>(null)
+    val paused = MutableStateFlow(false)
     val status = MutableStateFlow("Velg kanal")
+    val timeText = MutableStateFlow("")
     private var player: MediaPlayer? = null
+    private var ticker: Job? = null
 
-    fun toggle(channel: Channel) {
-        if (playingId.value == channel.id) {
-            stop()
-            return
-        }
+    fun select(channel: Channel) {
+        if (playingId.value == channel.id) return
         stop()
         playingId.value = channel.id
         status.value = "Kobler til ${channel.name}..."
@@ -107,7 +111,9 @@ class HomeScreenViewModel : LightViewModel<Unit>() {
             mp.setDataSource(url)
             mp.setOnPreparedListener {
                 it.start()
+                paused.value = false
                 status.value = "Spiller ${channel.name}"
+                startTicker()
             }
             mp.setOnErrorListener { _, _, _ ->
                 status.value = "Feil ved avspilling"
@@ -122,14 +128,71 @@ class HomeScreenViewModel : LightViewModel<Unit>() {
         }
     }
 
+    private fun startTicker() {
+        ticker?.cancel()
+        ticker = viewModelScope.launch {
+            while (true) {
+                try {
+                    val p = player ?: break
+                    timeText.value = formatTime(p.currentPosition)
+                } catch (e: Exception) {
+                    break
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    private fun formatTime(ms: Int): String {
+        val total = ms / 1000
+        val minutes = total / 60
+        val seconds = total % 60
+        return "%02d:%02d".format(minutes, seconds)
+    }
+
+    fun togglePause() {
+        val p = player ?: return
+        try {
+            if (paused.value) {
+                p.start()
+                paused.value = false
+                status.value = "Spiller"
+            } else {
+                p.pause()
+                paused.value = true
+                status.value = "Pauset"
+            }
+        } catch (e: Exception) {
+            status.value = "Feil ved pause"
+        }
+    }
+
+    fun seekBy(seconds: Int) {
+        val p = player ?: return
+        try {
+            var target = p.currentPosition + seconds * 1000
+            if (target < 0) target = 0
+            val dur = p.duration
+            if (dur > 0 && target > dur) target = dur
+            p.seekTo(target)
+        } catch (e: Exception) {
+            status.value = "Kan ikke spole"
+        }
+    }
+
     fun stop() {
+        ticker?.cancel()
+        ticker = null
         player?.release()
         player = null
         playingId.value = null
+        paused.value = false
+        timeText.value = ""
         status.value = "Velg kanal"
     }
 
     override fun onCleared() {
+        ticker?.cancel()
         player?.release()
         player = null
         super.onCleared()
@@ -148,7 +211,9 @@ class HomeScreen(sealedActivity: SealedLightActivity) :
     @Composable
     override fun Content() {
         val playingId by viewModel.playingId.collectAsState()
+        val paused by viewModel.paused.collectAsState()
         val status by viewModel.status.collectAsState()
+        val timeText by viewModel.timeText.collectAsState()
         val themeColors by LightThemeController.colors.collectAsState()
 
         LightTheme(colors = themeColors) {
@@ -171,9 +236,51 @@ class HomeScreen(sealedActivity: SealedLightActivity) :
                         lighten = playingId != null && playingId != channel.id,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .lightClickable { viewModel.toggle(channel) }
+                            .lightClickable { viewModel.select(channel) }
                             .padding(vertical = 20.dp),
                     )
+                }
+
+                if (playingId != null) {
+                    LightText(
+                        text = if (timeText.isEmpty()) "Direkte" else "Direkte  $timeText",
+                        variant = LightTextVariant.Copy,
+                        modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        LightText(
+                            text = "-15",
+                            variant = LightTextVariant.Heading,
+                            modifier = Modifier
+                                .lightClickable { viewModel.seekBy(-15) }
+                                .padding(vertical = 16.dp),
+                        )
+                        LightText(
+                            text = if (paused) "Spill" else "Pause",
+                            variant = LightTextVariant.Heading,
+                            modifier = Modifier
+                                .lightClickable { viewModel.togglePause() }
+                                .padding(vertical = 16.dp),
+                        )
+                        LightText(
+                            text = "+15",
+                            variant = LightTextVariant.Heading,
+                            modifier = Modifier
+                                .lightClickable { viewModel.seekBy(15) }
+                                .padding(vertical = 16.dp),
+                        )
+                        LightText(
+                            text = "Stopp",
+                            variant = LightTextVariant.Heading,
+                            modifier = Modifier
+                                .lightClickable { viewModel.stop() }
+                                .padding(vertical = 16.dp),
+                        )
+                    }
                 }
 
                 LightText(
